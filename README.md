@@ -99,6 +99,10 @@ These endpoints require Notion API version `2026-03-11`. The server now sources 
 
 ---
 
+### Jev semantic document ranking
+
+Usage, Codex MCP configuration, environment variables, and tool examples are in [Jev document ranking guide](docs/jev-document-ranking.md).
+
 ### Installation
 
 #### 1. Setting up integration in Notion

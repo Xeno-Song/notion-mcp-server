@@ -17,6 +17,44 @@ export type HttpClientResponse<T = any> = {
   headers: Headers
 }
 
+const NOTION_REQUEST_INTERVAL_MS = 500
+const NOTION_MAX_RETRIES = 5
+const NOTION_MAX_BACKOFF_MS = 30_000
+const NOTION_RETRY_JITTER_MS = 250
+
+/**
+ * One MCP process can issue many independent Notion requests concurrently.
+ * Serialize their start times and share a cooldown after rate limiting so a
+ * retry from one tool does not cause another tool to immediately hit 429.
+ */
+class NotionRequestScheduler {
+  private queue = Promise.resolve()
+  private nextStartAt = 0
+  private pausedUntil = 0
+
+  async waitForSlot(): Promise<void> {
+    let release!: () => void
+    const previous = this.queue
+    this.queue = new Promise<void>(resolve => { release = resolve })
+    await previous
+
+    try {
+      const now = Date.now()
+      const startAt = Math.max(now, this.nextStartAt, this.pausedUntil)
+      await sleep(startAt - now)
+      this.nextStartAt = Date.now() + NOTION_REQUEST_INTERVAL_MS
+    } finally {
+      release()
+    }
+  }
+
+  pauseFor(delayMs: number): void {
+    this.pausedUntil = Math.max(this.pausedUntil, Date.now() + delayMs)
+  }
+}
+
+const notionRequestScheduler = new NotionRequestScheduler()
+
 export class HttpClientError extends Error {
   constructor(
     message: string,
@@ -34,10 +72,12 @@ export class HttpClient {
   private client: OpenAPIClientAxios
   private config: HttpClientConfig
   private openApiSpec: OpenAPIV3.Document | OpenAPIV3_1.Document
+  private usesNotionApi: boolean
 
   constructor(config: HttpClientConfig, openApiSpec: OpenAPIV3.Document | OpenAPIV3_1.Document) {
     this.config = config
     this.openApiSpec = openApiSpec
+    this.usesNotionApi = isNotionApiBaseUrl(config.baseUrl)
     // @ts-expect-error
     this.client = new (OpenAPIClientAxios.default ?? OpenAPIClientAxios)({
       definition: openApiSpec,
@@ -163,30 +203,55 @@ export class HttpClient {
       throw new Error('Operation ID is required')
     }
 
-    // Handle file uploads if present
-    const formData = await this.prepareFileUpload(operation, params)
+    const operationFn = (api as any)[operationId]
+    if (!operationFn) {
+      throw new Error(`Operation ${operationId} not found`)
+    }
 
-    // Separate parameters based on their location
+    for (let attempt = 0; ; attempt++) {
+      if (this.usesNotionApi) await notionRequestScheduler.waitForSlot()
+
+      try {
+        return await this.executeOperationAttempt<T>(operation, params, operationFn)
+      } catch (error) {
+        const retryDelay = this.usesNotionApi ? getNotionRetryDelay(error, attempt) : undefined
+        if (retryDelay === undefined || attempt >= NOTION_MAX_RETRIES) {
+          throwHttpClientError(error)
+        }
+
+        notionRequestScheduler.pauseFor(retryDelay)
+        if (process.env.NODE_ENV !== 'test') {
+          console.warn('Retrying Notion request after rate limiting', {
+            operationId,
+            attempt: attempt + 1,
+            retryDelayMs: retryDelay,
+          })
+        }
+      }
+    }
+  }
+
+  private async executeOperationAttempt<T>(
+    operation: OpenAPIV3.OperationObject & { method: string; path: string },
+    params: Record<string, any>,
+    operationFn: (...args: any[]) => Promise<any>,
+  ): Promise<HttpClientResponse<T>> {
+    // Create a fresh FormData body for every attempt so file streams are never
+    // reused after a failed HTTP request.
+    const formData = await this.prepareFileUpload(operation, params)
     const urlParameters: Record<string, any> = {}
     const bodyParams: Record<string, any> = formData || { ...params }
 
-    // Extract path and query parameters based on operation definition
     if (operation.parameters) {
       for (const param of operation.parameters) {
-        if ('name' in param && param.name && param.in) {
-          if (param.in === 'path' || param.in === 'query') {
-            if (params[param.name] !== undefined) {
-              urlParameters[param.name] = params[param.name]
-              if (!formData) {
-                delete bodyParams[param.name]
-              }
-            }
-          }
+        if (!('name' in param) || !param.name || !param.in) continue
+        if ((param.in === 'path' || param.in === 'query') && params[param.name] !== undefined) {
+          urlParameters[param.name] = params[param.name]
+          if (!formData) delete bodyParams[param.name]
         }
       }
     }
 
-    // Add all parameters as url parameters if there is no requestBody defined
     if (!operation.requestBody && !formData) {
       for (const key in bodyParams) {
         if (bodyParams[key] !== undefined) {
@@ -196,55 +261,114 @@ export class HttpClient {
       }
     }
 
-    const operationFn = (api as any)[operationId]
-    if (!operationFn) {
-      throw new Error(`Operation ${operationId} not found`)
+    const hasBody = Object.keys(bodyParams).length > 0
+    const headers = formData
+      ? formData.getHeaders()
+      : { ...(hasBody ? { 'Content-Type': 'application/json' } : { 'Content-Type': null }) }
+    const requestConfig = {
+      headers: {
+        ...this.buildDefaultHeaders(operation),
+        ...headers,
+      },
     }
-
-    try {
-      // If we have form data, we need to set the correct headers
-      const hasBody = Object.keys(bodyParams).length > 0
-      const headers = formData
-        ? formData.getHeaders()
-        : { ...(hasBody ? { 'Content-Type': 'application/json' } : { 'Content-Type': null }) }
-      const requestConfig = {
-        headers: {
-          ...this.buildDefaultHeaders(operation),
-          ...headers,
-        },
-      }
-
-      // first argument is url parameters, second is body parameters
-      const response = await operationFn(urlParameters, hasBody ? bodyParams : undefined, requestConfig)
-
-      // Convert axios headers to Headers object
-      const responseHeaders = new Headers()
-      Object.entries(response.headers).forEach(([key, value]) => {
-        if (value) responseHeaders.append(key, value.toString())
-      })
-
-      return {
-        data: response.data,
-        status: response.status,
-        headers: responseHeaders,
-      }
-    } catch (error: any) {
-      if (error.response) {
-        // Only log errors in non-test environments to keep test output clean
-        if (process.env.NODE_ENV !== 'test') {
-          console.error('Error in http client', {
-            status: error.response.status,
-            statusText: error.response.statusText,
-          })
-        }
-        const headers = new Headers()
-        Object.entries(error.response.headers).forEach(([key, value]) => {
-          if (value) headers.append(key, value.toString())
-        })
-
-        throw new HttpClientError(error.response.statusText || 'Request failed', error.response.status, error.response.data, headers)
-      }
-      throw error
-    }
+    const response = await operationFn(urlParameters, hasBody ? bodyParams : undefined, requestConfig)
+    const responseHeaders = new Headers()
+    Object.entries(response.headers ?? {}).forEach(([key, value]) => {
+      if (value) responseHeaders.append(key, value.toString())
+    })
+    return { data: response.data, status: response.status, headers: responseHeaders }
   }
+}
+
+function isNotionApiBaseUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.notion.com'
+  } catch {
+    return false
+  }
+}
+
+function getNotionRetryDelay(error: unknown, attempt: number): number | undefined {
+  const response = getErrorResponse(error)
+  if (!response || (response.status !== 429 && response.status !== 529)) return undefined
+
+  const retryAfterMs = retryAfterMilliseconds(response.headers, response.data)
+  const exponentialBackoffMs = Math.min(1_000 * 2 ** attempt, NOTION_MAX_BACKOFF_MS)
+  const baseDelayMs = retryAfterMs === undefined
+    ? exponentialBackoffMs
+    : attempt === 0 ? retryAfterMs : Math.max(retryAfterMs, exponentialBackoffMs)
+  const jitterMs = process.env.NODE_ENV === 'test' ? 0 : Math.floor(Math.random() * NOTION_RETRY_JITTER_MS)
+  return baseDelayMs + jitterMs
+}
+
+function retryAfterMilliseconds(headers: unknown, data: unknown): number | undefined {
+  const headerValue = readHeader(headers, 'retry-after')
+  const headerSeconds = parseNonNegativeSeconds(headerValue)
+  if (headerSeconds !== undefined) return headerSeconds * 1_000
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined
+  const body = data as Record<string, unknown>
+  const additionalData = body.additional_data
+  if (additionalData && typeof additionalData === 'object' && !Array.isArray(additionalData)) {
+    const seconds = parseNonNegativeSeconds((additionalData as Record<string, unknown>).retry_after)
+    if (seconds !== undefined) return seconds * 1_000
+  }
+  return parseNonNegativeSeconds(body.retryAfter) === undefined
+    ? undefined
+    : parseNonNegativeSeconds(body.retryAfter)! * 1_000
+}
+
+function readHeader(headers: unknown, name: string): unknown {
+  if (!headers || typeof headers !== 'object') return undefined
+  const candidate = headers as { get?: (name: string) => unknown } & Record<string, unknown>
+  if (typeof candidate.get === 'function') return candidate.get(name)
+  return candidate[name] ?? candidate[name.toLowerCase()]
+}
+
+function parseNonNegativeSeconds(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+function getErrorResponse(error: unknown): {
+  status?: number
+  statusText?: string
+  data?: unknown
+  headers?: unknown
+} | undefined {
+  if (!error || typeof error !== 'object' || !('response' in error)) return undefined
+  const response = (error as { response?: unknown }).response
+  return response && typeof response === 'object'
+    ? response as { status?: number; statusText?: string; data?: unknown; headers?: unknown }
+    : undefined
+}
+
+function throwHttpClientError(error: unknown): never {
+  const response = getErrorResponse(error)
+  if (!response) throw error
+
+  if (process.env.NODE_ENV !== 'test') {
+    console.error('Error in http client', {
+      status: response.status,
+      statusText: response.statusText,
+    })
+  }
+  const headers = new Headers()
+  if (response.headers && typeof response.headers === 'object') {
+    Object.entries(response.headers).forEach(([key, value]) => {
+      if (value) headers.append(key, String(value))
+    })
+  }
+  throw new HttpClientError(
+    response.statusText || 'Request failed',
+    response.status ?? 0,
+    response.data,
+    headers,
+  )
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return delayMs > 0
+    ? new Promise(resolve => setTimeout(resolve, delayMs))
+    : Promise.resolve()
 }
