@@ -8,11 +8,35 @@ import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { JevClient, JevClientError } from '../../jev/client'
 import { JevDocumentRanker, RankingQuestion } from '../../jev/document-ranker'
 import { JevSectionLocator, SectionCandidate } from '../../jev/section-locator'
+import { internalFileUploadOperations, uploadNotionAttachment } from './notion-attachment'
 
 const RANK_NOTION_DOCUMENTS_TOOL = 'rank-notion-documents'
 const FIND_NOTION_SECTIONS_TOOL = 'find-notion-sections'
 const GET_NOTION_HEADING_TREE_TOOL = 'get-notion-heading-tree'
 const GET_NOTION_SECTION_CONTENT_TOOL = 'get-notion-section-content'
+const UPLOAD_NOTION_ATTACHMENT_TOOL = 'upload-notion-attachment'
+
+const uploadNotionAttachmentTool: Tool = {
+  name: UPLOAD_NOTION_ATTACHMENT_TOOL,
+  description: 'Upload a local file or image and attach it to a Notion page or block. A .html/.htm file or inline html_content becomes an interactive HTML embed block.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      parent_id: { type: 'string', minLength: 1, description: 'Page or block ID that will receive the new child block.' },
+      file_path: { type: 'string', minLength: 1, description: 'Absolute path to a file on the MCP server host.' },
+      html_content: { type: 'string', minLength: 1, description: 'Inline HTML to upload and attach as an HTML block.' },
+      kind: { type: 'string', enum: ['file', 'image', 'html'], description: 'Optional block kind; inferred from the file extension when omitted.' },
+      after: { type: 'string', minLength: 1, description: 'Optional sibling block ID after which to append.' },
+    },
+    required: ['parent_id'],
+    oneOf: [
+      { required: ['file_path'] },
+      { required: ['html_content'] },
+    ],
+  },
+  annotations: { title: 'Upload Notion Attachment', destructiveHint: true },
+}
 
 const rankNotionDocumentsTool: Tool = {
   name: RANK_NOTION_DOCUMENTS_TOOL,
@@ -362,6 +386,7 @@ export class MCPProxy {
       // Add methods as separate tools to match the MCP format
       Object.entries(this.tools).forEach(([toolName, def]) => {
         def.methods.forEach(method => {
+          if (internalFileUploadOperations.has(method.name)) return
           const toolNameWithMethod = `${toolName}-${method.name}`;
           const truncatedToolName = this.truncateToolName(toolNameWithMethod);
 
@@ -388,6 +413,7 @@ export class MCPProxy {
       tools.push(findNotionSectionsTool)
       tools.push(getNotionHeadingTreeTool)
       tools.push(getNotionSectionContentTool)
+      tools.push(uploadNotionAttachmentTool)
 
       return { tools }
     })
@@ -442,6 +468,23 @@ export class MCPProxy {
             isError: true,
           }
         }
+      }
+
+      if (name === UPLOAD_NOTION_ATTACHMENT_TOOL) {
+        try {
+          const result = await uploadNotionAttachment(this.httpClient, this.openApiLookup, params)
+          return { content: [{ type: 'text', text: JSON.stringify(result) }] }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error'
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ status: 'error', message }) }],
+            isError: true,
+          }
+        }
+      }
+
+      if (name.startsWith('API-') && internalFileUploadOperations.has(name.slice(4))) {
+        throw new Error(`Method ${name} not found`)
       }
 
       // Find the operation in OpenAPI spec

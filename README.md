@@ -84,7 +84,7 @@ If you have hardcoded tool names or prompts that reference the old database tool
 
 > **Note:** `retrieve-a-database` is still available and returns database metadata including the list of data source IDs. Use `retrieve-a-data-source` to get the schema and properties of a specific data source.
 
-**Total tools now: 22** (was 19 in v1.x)
+The live tool list is available through MCP `tools/list`; internal file-upload API steps are not exposed as separate tools.
 
 ---
 
@@ -102,6 +102,10 @@ These endpoints require Notion API version `2026-03-11`. The server now sources 
 ### Jev semantic document ranking
 
 Usage, Codex MCP configuration, environment variables, and tool examples are in [Jev document ranking guide](docs/jev-document-ranking.md).
+
+### Notion file, image, and HTML uploads
+
+Use `upload-notion-attachment` to upload a local file and attach it as a child block of a Notion page or block. See the [attachment upload guide](docs/notion-file-upload.md) for inputs, examples, limits, and HTML block behavior.
 
 ### Installation
 

@@ -2,8 +2,10 @@
 
 exports[`Notion OpenAPI spec -> MCP tools (snapshot) > generates a stable set of tool names 1`] = `
 [
+  "complete-file-upload",
   "create-a-comment",
   "create-a-data-source",
+  "create-file-upload",
   "delete-a-block",
   "get-block-children",
   "get-self",
@@ -23,6 +25,7 @@ exports[`Notion OpenAPI spec -> MCP tools (snapshot) > generates a stable set of
   "retrieve-a-page",
   "retrieve-a-page-property",
   "retrieve-page-markdown",
+  "send-file-upload",
   "update-a-block",
   "update-a-data-source",
   "update-page-markdown",
@@ -31,6 +34,17 @@ exports[`Notion OpenAPI spec -> MCP tools (snapshot) > generates a stable set of
 
 exports[`Notion OpenAPI spec -> MCP tools (snapshot) > generates stable tool definitions (name, method, description, params) 1`] = `
 [
+  {
+    "description": "Notion | Complete a file upload",
+    "httpMethod": "post",
+    "name": "complete-file-upload",
+    "properties": [
+      "file_upload_id",
+    ],
+    "required": [
+      "file_upload_id",
+    ],
+  },
   {
     "description": "Notion | Create comment
 Error Responses:
@@ -60,6 +74,21 @@ Error Responses:
     "required": [
       "parent",
       "properties",
+    ],
+  },
+  {
+    "description": "Notion | Create a file upload",
+    "httpMethod": "post",
+    "name": "create-file-upload",
+    "properties": [
+      "content_type",
+      "filename",
+      "mode",
+      "number_of_parts",
+    ],
+    "required": [
+      "filename",
+      "mode",
     ],
   },
   {
@@ -341,6 +370,20 @@ Error Responses:
     ],
     "required": [
       "page_id",
+    ],
+  },
+  {
+    "description": "Notion | Send a file upload",
+    "httpMethod": "post",
+    "name": "send-file-upload",
+    "properties": [
+      "file",
+      "file_upload_id",
+      "part_number",
+    ],
+    "required": [
+      "file",
+      "file_upload_id",
     ],
   },
   {

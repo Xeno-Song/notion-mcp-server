@@ -35,6 +35,16 @@
           "default": "2025-09-03"
         },
         "description": "The Notion API version"
+      },
+      "notionFileUploadVersion": {
+        "name": "Notion-Version",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "default": "2026-03-11"
+        },
+        "description": "The Notion API version required for file uploads"
       }
     },
     "schemas": {
@@ -298,6 +308,83 @@
     }
   ],
   "paths": {
+    "/v1/file_uploads": {
+      "post": {
+        "summary": "Create a file upload",
+        "description": "Internal operation used by upload-notion-attachment.",
+        "operationId": "create-file-upload",
+        "parameters": [
+          { "$ref": "#/components/parameters/notionFileUploadVersion" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["mode", "filename"],
+                "properties": {
+                  "mode": { "type": "string", "enum": ["single_part", "multi_part"] },
+                  "filename": { "type": "string" },
+                  "content_type": { "type": "string" },
+                  "number_of_parts": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "File Upload object" } }
+      }
+    },
+    "/v1/file_uploads/{file_upload_id}/send": {
+      "post": {
+        "summary": "Send a file upload",
+        "description": "Internal operation used by upload-notion-attachment.",
+        "operationId": "send-file-upload",
+        "parameters": [
+          {
+            "name": "file_upload_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          { "$ref": "#/components/parameters/notionFileUploadVersion" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" },
+                  "part_number": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "File Upload object" } }
+      }
+    },
+    "/v1/file_uploads/{file_upload_id}/complete": {
+      "post": {
+        "summary": "Complete a file upload",
+        "description": "Internal operation used by upload-notion-attachment.",
+        "operationId": "complete-file-upload",
+        "parameters": [
+          {
+            "name": "file_upload_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          { "$ref": "#/components/parameters/notionFileUploadVersion" }
+        ],
+        "responses": { "200": { "description": "File Upload object" } }
+      }
+    },
     "/v1/users/{user_id}": {
       "get": {
         "summary": "Retrieve a user",

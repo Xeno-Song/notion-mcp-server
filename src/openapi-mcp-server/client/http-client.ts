@@ -149,26 +149,32 @@ export class HttpClient {
 
     // Handle file uploads
     for (const param of fileParams) {
-      const filePath = params[param]
-      if (!filePath) {
+      const fileSource = params[param]
+      if (!fileSource) {
         throw new Error(`File path must be provided for parameter: ${param}`)
       }
-      switch (typeof filePath) {
+      switch (typeof fileSource) {
         case 'string':
-          addFile(param, filePath)
+          addFile(param, fileSource)
           break
         case 'object':
-          if(Array.isArray(filePath)) {
-            let fileCount = 0
-            for(const file of filePath) {
+          if (Array.isArray(fileSource)) {
+            for (const file of fileSource) {
               addFile(param, file)
-              fileCount++
             }
+            break
+          }
+          if (typeof fileSource.path === 'string' && Number.isSafeInteger(fileSource.start) && Number.isSafeInteger(fileSource.end) && fileSource.start >= 0 && fileSource.end >= fileSource.start) {
+            const stream = fs.createReadStream(fileSource.path, { start: fileSource.start, end: fileSource.end })
+            formData.append(param, stream, {
+              filename: fileSource.filename,
+              knownLength: fileSource.end - fileSource.start + 1,
+            })
             break
           }
           //deliberate fallthrough
         default:
-          throw new Error(`Unsupported file type: ${typeof filePath}`)
+          throw new Error(`Unsupported file type: ${typeof fileSource}`)
       }
       function addFile(name: string, filePath: string) {
           try {
@@ -180,10 +186,13 @@ export class HttpClient {
       }
     }
 
-    // Add non-file parameters to form data
+    // Path/query parameters belong in the URL, not in the multipart body.
+    const urlParameters = new Set((operation.parameters ?? [])
+      .filter(param => 'name' in param && (param.in === 'path' || param.in === 'query'))
+      .map(param => (param as OpenAPIV3.ParameterObject).name))
     for (const [key, value] of Object.entries(params)) {
-      if (!fileParams.includes(key)) {
-        formData.append(key, value)
+      if (!fileParams.includes(key) && !urlParameters.has(key) && value !== undefined) {
+        formData.append(key, String(value))
       }
     }
 
