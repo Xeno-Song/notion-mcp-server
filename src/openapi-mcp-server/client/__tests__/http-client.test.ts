@@ -246,6 +246,43 @@ describe('HttpClient', () => {
     })
   })
 
+  it('retries Notion 429 responses after the Retry-After delay', async () => {
+    vi.useFakeTimers()
+    const notionClient = new HttpClient({ baseUrl: 'https://api.notion.com' }, sampleSpec)
+    const notionApi: any = await notionClient['api']
+    const requestTimes: number[] = []
+    notionApi.getPet
+      .mockImplementationOnce(() => {
+        requestTimes.push(Date.now())
+        return Promise.reject({
+          response: {
+            status: 429,
+            statusText: 'Too Many Requests',
+            data: { additional_data: { retry_after: '1' } },
+            headers: { 'retry-after': '1' },
+          },
+        })
+      })
+      .mockImplementationOnce(() => {
+        requestTimes.push(Date.now())
+        return Promise.resolve({
+          data: { id: 1, name: 'Fluffy' },
+          status: 200,
+          headers: {},
+        })
+      })
+
+    try {
+      const request = notionClient.executeOperation(getPetOperation, { petId: 1 })
+      await vi.runAllTimersAsync()
+      await expect(request).resolves.toMatchObject({ data: { id: 1, name: 'Fluffy' } })
+      expect(notionApi.getPet).toHaveBeenCalledTimes(2)
+      expect(requestTimes[1]! - requestTimes[0]!).toBeGreaterThanOrEqual(1_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('should send body parameters in request body for POST operations', async () => {
     // Setup mock API with the new operation
     mockApi.testOperation = vi.fn().mockResolvedValue({
