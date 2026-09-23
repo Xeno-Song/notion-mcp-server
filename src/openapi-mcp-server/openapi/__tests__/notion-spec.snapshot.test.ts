@@ -5,7 +5,8 @@ import type { OpenAPIV3 } from 'openapi-types'
 import { OpenAPIToMCPConverter } from '../parser'
 
 /**
- * Locks the public MCP tool surface generated from the real Notion OpenAPI spec.
+ * Locks the MCP tool definitions generated from the real Notion OpenAPI spec.
+ * The proxy hides file-upload primitives and exposes one high-level upload tool.
  *
  * This is the regression guard for the vendored OpenAPI -> MCP converter: any
  * change that alters tool names, descriptions, the HTTP method (which drives

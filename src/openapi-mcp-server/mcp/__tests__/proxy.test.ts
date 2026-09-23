@@ -64,7 +64,21 @@ describe('MCPProxy', () => {
         expect.objectContaining({ name: 'find-notion-sections' }),
         expect.objectContaining({ name: 'get-notion-heading-tree' }),
         expect.objectContaining({ name: 'get-notion-section-content' }),
+        expect.objectContaining({ name: 'upload-notion-attachment', annotations: expect.objectContaining({ destructiveHint: true }) }),
       ]))
+    })
+
+    it('hides internal file upload steps from the public tool list', async () => {
+      mockOpenApiSpec.paths['/v1/file_uploads'] = {
+        post: { operationId: 'create-file-upload', responses: { '200': { description: 'Success' } } },
+      }
+      proxy = new MCPProxy('test-proxy', mockOpenApiSpec)
+      const server = (proxy as any).server
+      const listToolsHandler = server.setRequestHandler.mock.calls[0].filter((x: unknown) => typeof x === 'function')[0]
+      const result = await listToolsHandler()
+
+      expect(result.tools.map((tool: { name: string }) => tool.name)).not.toContain('API-create-file-upload')
+      expect(result.tools.map((tool: { name: string }) => tool.name)).toContain('upload-notion-attachment')
     })
 
     it('should truncate tool names exceeding 64 characters', async () => {

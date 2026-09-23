@@ -202,4 +202,31 @@ describe('HttpClient File Upload', () => {
     expect(FormData.prototype.append).toHaveBeenCalledWith('description', 'Test files')
     expect(mockApiInstance.uploadFile).toHaveBeenCalledWith({}, expect.any(FormData), { headers: mockFormDataHeaders })
   })
+
+  it('streams a ranged upload without adding the path ID to the multipart body', async () => {
+    const mockFileStream = { pipe: vi.fn() }
+    const mockFormDataHeaders = { 'content-type': 'multipart/form-data; boundary=---123' }
+    vi.mocked(fs.createReadStream).mockReturnValue(mockFileStream as any)
+    vi.spyOn(FormData.prototype, 'append').mockImplementation(() => {})
+    vi.spyOn(FormData.prototype, 'getHeaders').mockReturnValue(mockFormDataHeaders)
+    mockApiInstance.uploadFile.mockResolvedValue({ data: { success: true }, status: 200, headers: {} })
+
+    const operation = {
+      ...mockOpenApiSpec.paths['/upload']!.post!,
+      parameters: [{ name: 'file_upload_id', in: 'path', required: true, schema: { type: 'string' } }],
+    } as OpenAPIV3.OperationObject & { method: string; path: string }
+    await client.executeOperation(operation, {
+      file_upload_id: 'upload-1',
+      file: { path: '/path/to/large.pdf', filename: 'large.pdf', start: 10, end: 19 },
+      part_number: '2',
+    })
+
+    expect(fs.createReadStream).toHaveBeenCalledWith('/path/to/large.pdf', { start: 10, end: 19 })
+    expect(FormData.prototype.append).toHaveBeenCalledWith('file', mockFileStream, { filename: 'large.pdf', knownLength: 10 })
+    expect(FormData.prototype.append).toHaveBeenCalledWith('part_number', '2')
+    expect(FormData.prototype.append).not.toHaveBeenCalledWith('file_upload_id', expect.anything())
+    expect(mockApiInstance.uploadFile).toHaveBeenCalledWith(
+      { file_upload_id: 'upload-1' }, expect.any(FormData), { headers: mockFormDataHeaders },
+    )
+  })
 })
